@@ -1,0 +1,10 @@
+# Derleme çıktıları / Build output
+.build/
+build/
+.swiftpm/
+
+# --snapshot çıktıları (README görselleri docs/images içinde)
+# --snapshot output (README images live in docs/images)
+snapshots/
+
+.DS_Store

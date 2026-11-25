@@ -1,0 +1,5 @@
+#!/bin/sh
+# Ada'ya terminalden mesaj gönderir / Sends a message to Ada from the terminal.
+#   ada "lab7 bitti!"
+#   python3 long_job.py; ada "Job done"
+exec "$HOME/Applications/Ada.app/Contents/MacOS/Ada" --say "$@"
