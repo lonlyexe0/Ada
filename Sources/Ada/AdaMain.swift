@@ -9,6 +9,17 @@ enum AdaMain {
     @MainActor
     static func main() {
         let arguments = CommandLine.arguments
+        signal(SIGPIPE, SIG_IGN) // kapanmış bir boruya / sokete yazınca çökmesin
+        // Claude Code izin kancası: Ada --claude-permission (stdin: kancanın JSON'u)
+        if arguments.contains("--claude-permission") {
+            PermissionHook.run()
+            return
+        }
+        // Claude Code durum satırı: Ada --statusline (kullanım limitlerini Ada'ya iletir)
+        if arguments.contains("--statusline") {
+            UsageStatusLine.run()
+            return
+        }
         // Terminalden mesaj: Ada --say "Kod bitti!"
         if let index = arguments.firstIndex(of: "--say") {
             let text = arguments[(index + 1)...].joined(separator: " ")

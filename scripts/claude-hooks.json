@@ -1,4 +1,8 @@
 {
+  "statusLine": {
+    "type": "command",
+    "command": "$HOME/Applications/Ada.app/Contents/MacOS/Ada --statusline 2>/dev/null"
+  },
   "hooks": {
     "UserPromptSubmit": [
       {
@@ -33,6 +37,18 @@
             "command": "$HOME/Applications/Ada.app/Contents/MacOS/Ada --claude-event wait 2>/dev/null || true",
             "timeout": 5,
             "async": true
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/Applications/Ada.app/Contents/MacOS/Ada --claude-permission 2>/dev/null || true",
+            "timeout": 45
           }
         ]
       }

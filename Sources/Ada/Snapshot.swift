@@ -2,11 +2,11 @@ import AppKit
 import SwiftUI
 
 /// `Ada --snapshot <klasör>` → adanın her halini PNG olarak çizer.
-/// Ekrana pencere açmadan tasarımı kontrol etmek için. Sözler uydurma örnek satırlardır.
+/// Ekrana pencere açmadan tasarımı kontrol etmek için. Sözler, dosyalar, pano ve takvim uydurma örneklerdir.
 @MainActor
 enum Snapshot {
-    /// Resim çıkarılırken true: Core Animation görünümleri yerine sabit çizimler kullanılır
-    /// (resim çizici AppKit görünümlerini çizemiyor).
+    /// Resim çıkarılırken true: Core Animation görünümleri ve kaydırma alanları yerine sabit çizimler
+    /// kullanılır (resim çizici AppKit görünümlerini çizemiyor).
     static var isRendering = false
 
     private struct Case {
@@ -20,6 +20,11 @@ enum Snapshot {
         var finished = false
         var unseen = false
         var musicIdle = false
+        var tab: PanelTab = .home
+        var permission = false
+        var usage = false
+        var calendar = false
+        var shelfFiles = false
     }
 
     static func renderAll(to folder: URL) {
@@ -42,9 +47,15 @@ enum Snapshot {
         let battery = BatteryMonitor(preview: true)
         let lyrics = LyricsStore()
         let claude = ClaudeActivity()
+        let permissions = PermissionCenter()
+        let shelf = FileShelf(preview: true)
+        let clipboard = ClipboardHistory(preview: true)
+        clipboard.loadPreview()
+        let agenda = CalendarAgenda(preview: true)
+        let volume = VolumeMonitor(preview: true)
 
-        let expanded = IslandLayout(notch: notch, showsLyrics: true, showsClaude: true).expandedSize
-        let canvas = CGSize(width: expanded.width + 80, height: expanded.height + 50)
+        let largest = IslandLayout.largestSize(notch: notch)
+        let canvas = CGSize(width: largest.width + 80, height: largest.height + 50)
 
         let cases = [
             Case(name: "01-kapali", mode: .closed),
@@ -66,17 +77,31 @@ enum Snapshot {
             Case(name: "15-claude-rozet", mode: .claudeDone, music: false, unseen: true),
             Case(name: "16-muzik-rozet", mode: .music, unseen: true),
             Case(name: "17-acik-muzik-bosta", mode: .expanded, musicIdle: true),
+            Case(name: "18-claude-izin", mode: .claudePermission, music: false, permission: true),
+            Case(name: "19-ses", mode: .volume, music: false),
+            Case(name: "20-raf", mode: .expanded, tab: .shelf, shelfFiles: true),
+            Case(name: "21-raf-bos", mode: .expanded, tab: .shelf),
+            Case(name: "22-pano", mode: .expanded, tab: .clipboard),
+            Case(name: "23-bosta-takvim", mode: .expanded, music: false, calendar: true),
+            Case(name: "24-claude-kullanim", mode: .expanded, music: false, finished: true, usage: true),
         ]
 
         for item in cases {
             player.loadPreview(withMusic: item.music, idle: item.musicIdle)
             lyrics.setPreview(item.lyrics ? .synced(LyricsStore.previewLines) : .none)
-            claude.loadPreview(item.claude, finished: item.finished, unseen: item.unseen)
+            claude.loadPreview(item.claude, finished: item.finished, unseen: item.unseen, usage: item.usage)
+            permissions.loadPreview(item.permission)
+            shelf.loadPreview(item.shelfFiles ? FileShelf.previewFiles : [])
+            agenda.loadPreview(item.calendar)
             state.forcedMode = item.mode
+            state.tab = item.tab
             state.swipeProgress = item.swipe
             state.message = item.message
-            state.lastSender = (item.message?.sender == .claude || item.claude == .waiting) ? .claude : .user
-            let view = IslandRootView(state: state, player: player, battery: battery, lyrics: lyrics, claude: claude)
+            let fromClaude = item.message?.sender == .claude || item.claude == .waiting || item.permission
+            state.lastSender = fromClaude ? .claude : .user
+            let view = IslandRootView(state: state, player: player, battery: battery, lyrics: lyrics, claude: claude,
+                                      permissions: permissions, shelf: shelf, clipboard: clipboard, agenda: agenda,
+                                      volume: volume)
                 .frame(width: canvas.width, height: canvas.height)
                 .background(Color(white: 0.62))
             let renderer = ImageRenderer(content: view)

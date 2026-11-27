@@ -28,6 +28,11 @@ final class ClaudeActivity: ObservableObject {
     @Published private(set) var lastFinished: Finished?
     /// Claude bitirdi ama sen daha görmedin → çentiğin yanında ✓ durur.
     @Published private(set) var unseenDone = false
+    /// Kullanım limitleri (sadece terminaldeki Claude Code'un durum satırından gelir).
+    @Published private(set) var usage: ClaudeUsage?
+
+    /// "5 sa %42 · hafta %18" (sıfırlanmış pencereler gösterilmez).
+    var usageText: String? { usage?.text() }
 
     /// Gösterilecek oturum: önce onay bekleyen, yoksa en son hareket eden.
     var current: Session? {
@@ -39,7 +44,11 @@ final class ClaudeActivity: ObservableObject {
     var isWaiting: Bool { sessions.values.contains { $0.phase == .waiting } }
     var isWorking: Bool { !sessions.isEmpty }
     /// Büyük panelde Claude satırı gösterilsin mi?
-    var hasRow: Bool { isWorking || lastFinished != nil }
+    var hasRow: Bool { isWorking || lastFinished != nil || usageText != nil }
+
+    func updateUsage(_ usage: ClaudeUsage) {
+        self.usage = usage
+    }
 
     /// "Bash için onayını bekliyorum" gibi kısa açıklama.
     var waitingText: String {
@@ -97,7 +106,8 @@ final class ClaudeActivity: ObservableObject {
 
     // MARK: Önizleme (snapshot)
 
-    func loadPreview(_ phase: Phase?, finished: Bool = false, unseen: Bool = false) {
+    func loadPreview(_ phase: Phase?, finished: Bool = false, unseen: Bool = false, usage: Bool = false) {
+        self.usage = usage ? ClaudeUsage(fiveHour: 42, fiveHourReset: nil, week: 18, weekReset: nil) : nil
         let now = Date()
         if let phase {
             sessions = ["preview": Session(start: now.addingTimeInterval(-83), lastEvent: now, folder: "Ada",

@@ -7,27 +7,30 @@ struct IslandRootView: View {
     @ObservedObject var battery: BatteryMonitor
     @ObservedObject var lyrics: LyricsStore
     @ObservedObject var claude: ClaudeActivity
+    @ObservedObject var permissions: PermissionCenter
+    let shelf: FileShelf
+    let clipboard: ClipboardHistory
+    let agenda: CalendarAgenda
+    let volume: VolumeMonitor
 
     /// Claude'la ilgili her şeyin rengi (maskotla aynı turuncu).
     static let claudeOrange = MascotColors.orangeSwiftUI
 
     var body: some View {
-        let layout = IslandLayout(notch: state.notch,
-                                  showsLyrics: player.track != nil && !player.musicIdle && lyrics.hasContent,
-                                  showsClaude: claude.hasRow)
-        let mode = state.forcedMode ?? IslandLayout.mode(
-            hovered: state.hovered, peek: state.peek, hasMessage: state.message != nil,
-            claudeWaiting: claude.isWaiting, claudeWorking: claude.isWorking, claudeUnseen: claude.unseenDone,
-            hasTrack: player.track != nil, isPlaying: player.isPlaying)
+        let layout = IslandLayout(state: state, player: player, lyrics: lyrics, claude: claude)
+        let mode = IslandLayout.mode(state: state, player: player, claude: claude, permissions: permissions)
         let size = layout.size(for: mode)
         let radius = layout.radii(for: mode)
         let shape = NotchShape(topRadius: radius.top, bottomRadius: radius.bottom)
         let claudeDone = mode == .message && state.message?.sender == .claude
+        // Claude senden bir şey bekliyor (izin ya da onay): maskot "?" ile çıkar, çizgi turuncu yanar.
+        let asking = mode == .claudeWaiting || mode == .claudePermission
+        let lineColor = asking || (state.message?.sender ?? state.lastSender) == .claude
+            ? Self.claudeOrange : Color.white
 
         ZStack(alignment: .top) {
-            // 1) Claude'un maskotu: iş bitince ya da onay beklerken adanın arkasından aşağı sarkar
-            mascotLayer(visible: state.mascotEnabled && (claudeDone || mode == .claudeWaiting),
-                        asking: mode == .claudeWaiting)
+            // 1) Claude'un maskotu: iş bitince ya da senden bir şey beklerken adanın arkasından aşağı sarkar
+            mascotLayer(visible: state.mascotEnabled && (claudeDone || asking), asking: asking)
                 .offset(y: size.height - 3)
 
             // 2) Adanın kendisi
@@ -37,11 +40,12 @@ struct IslandRootView: View {
             }
             .frame(width: size.width + radius.top * 2, height: size.height)
             .clipShape(shape)
-            .shadow(color: .black.opacity(mode == .expanded ? 0.45 : 0), radius: 14, y: 6)
+            .shadow(color: .black.opacity(mode == .expanded || mode == .claudePermission ? 0.45 : 0),
+                    radius: 14, y: 6)
             .opacity(mode == .closed && !state.notch.hasNotch ? 0 : 1)
 
             // 3) Alt kenarda yanan ince çizgi (Claude: turuncu, terminal: beyaz)
-            noticeLine(active: mode == .message || mode == .claudeWaiting, width: size.width)
+            noticeLine(active: mode == .message || asking, width: size.width, color: lineColor)
                 .offset(y: size.height - 1.5)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -64,9 +68,8 @@ struct IslandRootView: View {
         .animation(.spring(response: 0.5, dampingFraction: 0.7), value: visible)
     }
 
-    private func noticeLine(active: Bool, width: CGFloat) -> some View {
-        let color = (state.message?.sender ?? state.lastSender) == .claude ? Self.claudeOrange : Color.white
-        return Capsule()
+    private func noticeLine(active: Bool, width: CGFloat, color: Color) -> some View {
+        Capsule()
             .fill(color)
             .frame(width: active ? min(width * 0.25, 90) : 0, height: 3)
             .shadow(color: color.opacity(0.9), radius: 4)
@@ -100,6 +103,10 @@ struct IslandRootView: View {
             MessageRow(icon: "hand.raised.fill", iconColor: Self.claudeOrange, label: "Claude",
                        text: claude.waitingText, notch: notch, width: size.width, height: size.height)
                 .transition(Self.fade)
+        case .claudePermission:
+            PermissionCard(permissions: permissions, notch: notch, width: size.width, height: size.height,
+                           onAnswer: answerPermission)
+                .transition(Self.fade)
         case .message:
             MessageRow(icon: fromClaude ? "sparkle" : "terminal.fill",
                        iconColor: fromClaude ? Self.claudeOrange : .white,
@@ -109,12 +116,23 @@ struct IslandRootView: View {
         case .charging:
             ChargingRow(battery: battery, notch: notch, width: size.width)
                 .transition(Self.fade)
+        case .volume:
+            VolumeRow(volume: volume, notch: notch, width: size.width)
+                .transition(Self.fade)
         case .expanded:
             ExpandedView(state: state, player: player, battery: battery, lyrics: lyrics, claude: claude,
-                         notch: notch)
+                         shelf: shelf, clipboard: clipboard, agenda: agenda, notch: notch)
                 .frame(width: size.width, height: size.height, alignment: .top)
                 .transition(Self.fade)
         }
+    }
+
+    /// İzin kartındaki butonlar. Cevaptan sonra kart kapanır (fare hâlâ üstündeyse açık panele dönmesin).
+    private func answerPermission(_ reply: PermissionReply) {
+        let fromDesktop = permissions.current?.fromDesktop ?? false
+        permissions.answer(reply)
+        if reply == .pass, fromDesktop { claude.openClaude() }
+        state.hovered = false
     }
 
     private static var fade: AnyTransition {
@@ -207,6 +225,112 @@ struct ClaudeTimer: View {
                 .font(.system(size: 12, weight: .semibold).monospacedDigit())
                 .foregroundStyle(IslandRootView.claudeOrange)
         }
+    }
+}
+
+/// Claude izin istiyor: ne yapmak istediği + Reddet / Claude'da aç / İzin ver.
+/// Komutun tamamı sığmadıysa "İzin ver" çıkmaz; Claude'da bakman gerekir.
+struct PermissionCard: View {
+    @ObservedObject var permissions: PermissionCenter
+    let notch: NotchMetrics
+    let width: CGFloat
+    let height: CGFloat
+    let onAnswer: (PermissionReply) -> Void
+
+    var body: some View {
+        if let prompt = permissions.current {
+            VStack(spacing: 0) {
+                // Çentiğin iki yanı: kilit + geri sayım
+                HStack(spacing: 0) {
+                    Image(systemName: "lock.shield.fill")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(IslandRootView.claudeOrange)
+                        .padding(.leading, 20)
+                    Spacer(minLength: notch.width)
+                    Text(timerInterval: prompt.arrived...prompt.deadline, countsDown: true)
+                        .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(.white.opacity(0.5))
+                        .padding(.trailing, 20)
+                }
+                .frame(height: notch.height)
+
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack(spacing: 5) {
+                        Text(verbatim: "\(prompt.toolName) için izin istiyor")
+                            .foregroundStyle(IslandRootView.claudeOrange)
+                        if !prompt.folder.isEmpty {
+                            Text(verbatim: "· \(prompt.folder)")
+                                .foregroundStyle(.white.opacity(0.5))
+                        }
+                    }
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+
+                    Text(verbatim: prompt.detail.isEmpty ? "(ayrıntı yok)" : prompt.detail)
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.88))
+                        .lineLimit(3)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .frame(height: 41, alignment: .topLeading)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 6)
+                        .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color.white.opacity(0.08)))
+
+                    HStack(spacing: 8) {
+                        CardButton(title: "Reddet", symbol: "xmark", fill: Color.white.opacity(0.14)) {
+                            onAnswer(.deny)
+                        }
+                        Spacer(minLength: 4)
+                        if !prompt.complete {
+                            Text(verbatim: "Tamamı sığmadı")
+                                .font(.system(size: 10.5, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.45))
+                                .lineLimit(1)
+                        }
+                        CardButton(title: prompt.fromDesktop ? "Claude'da aç" : "Terminalde cevapla",
+                                   symbol: "arrow.up.forward.app", fill: Color.white.opacity(0.14)) {
+                            onAnswer(.pass)
+                        }
+                        if prompt.complete {
+                            CardButton(title: "İzin ver", symbol: "checkmark", fill: IslandRootView.claudeOrange) {
+                                onAnswer(.allow)
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 4)
+            }
+            .frame(width: width, height: height, alignment: .top)
+        }
+    }
+}
+
+/// İzin kartındaki buton.
+struct CardButton: View {
+    let title: String
+    let symbol: String
+    let fill: Color
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Image(systemName: symbol)
+                    .font(.system(size: 10, weight: .bold))
+                Text(verbatim: title)
+                    .lineLimit(1)
+            }
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .frame(height: 26)
+            .background(Capsule().fill(fill))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(PressScaleStyle())
     }
 }
 
@@ -314,44 +438,62 @@ struct ChargingRow: View {
 
 // MARK: - Büyük panel
 
-/// Fare üstündeyken açılan panel.
+/// Fare üstündeyken açılan panel. Üstte sekmeler: ana sayfa, raf, pano.
 struct ExpandedView: View {
     @ObservedObject var state: IslandState
     @ObservedObject var player: NowPlaying
     @ObservedObject var battery: BatteryMonitor
     @ObservedObject var lyrics: LyricsStore
     @ObservedObject var claude: ClaudeActivity
+    @ObservedObject var shelf: FileShelf
+    let clipboard: ClipboardHistory
+    let agenda: CalendarAgenda
     let notch: NotchMetrics
 
     var body: some View {
         VStack(spacing: 0) {
             topBar.frame(height: notch.height)
+            Group {
+                switch state.tab {
+                case .home:
+                    home
+                case .shelf:
+                    ShelfView(shelf: shelf)
+                case .clipboard:
+                    ClipboardView(clipboard: clipboard)
+                }
+            }
+            .frame(maxHeight: .infinity, alignment: .top)
+            .transition(.opacity)
+        }
+    }
+
+    private var home: some View {
+        VStack(spacing: 0) {
             if claude.hasRow {
                 ClaudeRow(claude: claude)
                     .padding(.horizontal, 18)
                     .frame(height: IslandLayout.claudeRowHeight, alignment: .top)
             }
             Group {
-                // Müzik 2 dk'dır duraklatılmışsa normal panel (saat, tarih, "Son çalan")
+                // Müzik 2 dk'dır duraklatılmışsa normal panel (saat, tarih, takvim, "Son çalan")
                 if let track = player.track, !player.musicIdle {
                     MusicPanel(player: player, lyrics: lyrics, track: track,
                                swipeProgress: state.swipeProgress, swipeFlash: state.swipeFlash)
                 } else {
-                    IdlePanel(player: player)
+                    IdlePanel(player: player, agenda: agenda)
                 }
             }
             .frame(maxHeight: .infinity)
         }
     }
 
-    /// Üst şerit: solda kaynak uygulama, sağda pil. Ortası kamera çentiği.
+    /// Üst şerit: solda sekmeler, sağda pil. Ortası kamera çentiği.
     private var topBar: some View {
-        HStack {
-            HStack(spacing: 5) {
-                let app = player.musicIdle ? nil : player.app
-                Image(systemName: app?.symbol ?? "capsule.fill")
-                Text(verbatim: app?.displayName ?? "Ada")
-            }
+        HStack(spacing: 4) {
+            tabButton(.home, symbol: "house.fill")
+            tabButton(.shelf, symbol: shelf.files.isEmpty ? "tray.fill" : "tray.full.fill")
+            tabButton(.clipboard, symbol: "doc.on.clipboard.fill")
             Spacer()
             if battery.hasBattery {
                 HStack(spacing: 5) {
@@ -362,7 +504,23 @@ struct ExpandedView: View {
         }
         .font(.system(size: 11, weight: .semibold))
         .foregroundStyle(.white.opacity(0.5))
-        .padding(.horizontal, 24)
+        .padding(.leading, 18)
+        .padding(.trailing, 24)
+    }
+
+    private func tabButton(_ tab: PanelTab, symbol: String) -> some View {
+        let selected = state.tab == tab
+        return Button {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { state.tab = tab }
+        } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(selected ? Color.white : Color.white.opacity(0.4))
+                .frame(width: 28, height: 20)
+                .background(Capsule().fill(Color.white.opacity(selected ? 0.16 : 0)))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(PressScaleStyle())
     }
 }
 
@@ -405,19 +563,24 @@ struct ClaudeRow: View {
     private var title: String {
         if claude.isWaiting { return claude.waitingText }
         if claude.isWorking { return "Claude çalışıyor" }
-        return "Claude işini bitirdi"
+        if claude.lastFinished != nil { return "Claude işini bitirdi" }
+        return "Claude kullanımı"
     }
 
+    /// Klasör · ne zaman · kullanım limitleri ("5 sa %42 · hafta %18")
     private var subtitle: String {
+        var parts: [String] = []
         if let session = claude.current {
-            return session.folder.isEmpty ? "Claude Code" : session.folder
+            parts.append(session.folder.isEmpty ? "Claude Code" : session.folder)
+        } else if let finished = claude.lastFinished {
+            let formatter = RelativeDateTimeFormatter()
+            formatter.locale = Locale(identifier: "tr_TR")
+            formatter.unitsStyle = .short
+            let ago = formatter.localizedString(for: finished.at, relativeTo: Date())
+            parts.append(finished.folder.isEmpty ? ago : "\(finished.folder) · \(ago)")
         }
-        guard let finished = claude.lastFinished else { return "" }
-        let formatter = RelativeDateTimeFormatter()
-        formatter.locale = Locale(identifier: "tr_TR")
-        formatter.unitsStyle = .short
-        let ago = formatter.localizedString(for: finished.at, relativeTo: Date())
-        return finished.folder.isEmpty ? ago : "\(finished.folder) · \(ago)"
+        if let usage = claude.usageText { parts.append(usage) }
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -509,9 +672,10 @@ struct ProgressRow: View {
     }
 }
 
-/// Hiçbir şey çalmıyorken: saat, tarih ve Müzik'i açma butonu.
+/// Hiçbir şey çalmıyorken: saat, tarih, sıradaki takvim etkinliği ve Müzik'i açma butonu.
 struct IdlePanel: View {
     @ObservedObject var player: NowPlaying
+    let agenda: CalendarAgenda
 
     var body: some View {
         TimelineView(.everyMinute) { context in
@@ -524,6 +688,8 @@ struct IdlePanel: View {
                     Text(verbatim: Self.day.string(from: context.date))
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.white.opacity(0.5))
+                    AgendaLine(agenda: agenda, now: context.date)
+                        .padding(.top, 5)
                 }
                 Spacer(minLength: 0)
                 VStack(alignment: .trailing, spacing: 8) {

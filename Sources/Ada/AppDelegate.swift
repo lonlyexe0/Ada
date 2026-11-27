@@ -7,6 +7,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private var launchAtLoginItem: NSMenuItem?
     private var mascotItem: NSMenuItem?
+    private var clipboardItem: NSMenuItem?
+    private var volumeItem: NSMenuItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         island = IslandController()
@@ -39,6 +41,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(mascotToggle)
         mascotItem = mascotToggle
 
+        let volumeToggle = NSMenuItem(title: "Ses göstergesi", action: #selector(toggleVolume), keyEquivalent: "")
+        volumeToggle.target = self
+        menu.addItem(volumeToggle)
+        volumeItem = volumeToggle
+
+        let clipboardToggle = NSMenuItem(title: "Pano geçmişi", action: #selector(toggleClipboard),
+                                         keyEquivalent: "")
+        clipboardToggle.target = self
+        menu.addItem(clipboardToggle)
+        clipboardItem = clipboardToggle
+
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Ada'dan çık",
                                 action: #selector(NSApplication.terminate(_:)),
@@ -51,10 +64,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         launchAtLoginItem?.state = SMAppService.mainApp.status == .enabled ? .on : .off
         mascotItem?.state = (island?.state.mascotEnabled ?? false) ? .on : .off
+        volumeItem?.state = (island?.volume.enabled ?? false) ? .on : .off
+        clipboardItem?.state = (island?.clipboard.enabled ?? false) ? .on : .off
     }
 
     @objc private func toggleMascot() {
         island?.state.mascotEnabled.toggle()
+    }
+
+    @objc private func toggleVolume() {
+        island?.volume.enabled.toggle()
+    }
+
+    @objc private func toggleClipboard() {
+        island?.clipboard.enabled.toggle()
     }
 
     // MARK: Mac açılınca başlat
